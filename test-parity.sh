@@ -116,6 +116,9 @@ PYEOF
 # 14. /auth/user body byte-parity vs live CT101 shape (alphabetical keys)
 R=$(curl -s -o /tmp/b14 -w "%{http_code}" "$B/auth/user" -H "Authorization: Bearer $TOKEN")
 check "user body byte-parity" '{"extra":null,"id":1,"image":null,"roles":["admin"],"username":"admin"}' "$(cat /tmp/b14)"
+python3 -c "import sys;sys.exit(0 if open('/tmp/b14','rb').read().endswith(bytes([10])) else 1)" \
+  && { echo "PASS: JSON body trailing newline (Flask jsonify parity)"; pass=$((pass+1)); } \
+  || { echo "FAIL: JSON body missing trailing newline"; fail=$((fail+1)); }
 
 kill $SRV 2>/dev/null
 echo "=== RESULT: pass=$pass fail=$fail ==="

@@ -7,7 +7,7 @@ mod settings;
 mod user;
 
 use axum::{
-    body::Body,
+    body::{to_bytes, Body},
     extract::{Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::{self, Next},
@@ -91,7 +91,14 @@ fn extract_token(req: &Request) -> Option<String> {
 }
 
 fn fje_error(status: StatusCode, msg: String) -> Response {
-    (status, Json(json!({ "msg": msg }))).into_response()
+    // Flask jsonify appends a trailing newline — match it byte-for-byte.
+    let body = format!("{}\n", json!({ "msg": msg }));
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
 }
 
 async fn auth_middleware(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
@@ -142,6 +149,24 @@ async fn auth_middleware(State(st): State<AppState>, mut req: Request, next: Nex
     }
 
     let mut res = next.run(req).await;
+
+    // parity: Flask's jsonify appends "\n" to every JSON body. Add it once here
+    // so all JSON responses (2xx + handler errors) match CT101 byte-for-byte.
+    if res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("application/json"))
+        .unwrap_or(false)
+    {
+        let (parts, body) = res.into_parts();
+        let mut bytes = match to_bytes(body, usize::MAX).await {
+            Ok(b) => b.to_vec(),
+            Err(_) => Vec::new(),
+        };
+        bytes.push(b'\n');
+        res = Response::from_parts(parts, Body::from(bytes));
+    }
 
     // after_request: refresh the access cookie when it expires within 7 days,
     // skipped when the caller used an Authorization header — parity app_builder.py.
