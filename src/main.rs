@@ -67,13 +67,7 @@ fn optional_auth(path: &str) -> bool {
 }
 
 fn extract_token(req: &Request) -> Option<String> {
-    if let Some(authz) = req.headers().get(header::AUTHORIZATION) {
-        if let Ok(v) = authz.to_str() {
-            if let Some(t) = v.strip_prefix("Bearer ") {
-                return Some(t.to_string());
-            }
-        }
-    }
+    // fje JWT_TOKEN_LOCATION = ["cookies", "headers"] — cookie wins when both present.
     if let Some(cookie) = req.headers().get(header::COOKIE) {
         if let Ok(v) = cookie.to_str() {
             for part in v.split(';') {
@@ -83,6 +77,13 @@ fn extract_token(req: &Request) -> Option<String> {
                         return Some(t.to_string());
                     }
                 }
+            }
+        }
+    }
+    if let Some(authz) = req.headers().get(header::AUTHORIZATION) {
+        if let Ok(v) = authz.to_str() {
+            if let Some(t) = v.strip_prefix("Bearer ") {
+                return Some(t.to_string());
             }
         }
     }

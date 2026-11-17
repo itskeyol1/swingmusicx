@@ -12,7 +12,7 @@ PW="testpassword123"
 
 rm -rf $CFG; mkdir -p $CFG/swingmusic
 cat > $CFG/swingmusic/settings.json <<EOF
-{"serverId": "$SERVER_ID", "usersOnLogin": true, "rootDirs": ["/mnt/pve/swing-music"]}
+{"serverId": "$SERVER_ID", "usersOnLogin": true, "rootDirs": ["/mnt/music"]}
 EOF
 
 python3 - "$CFG/swingmusic/swingmusic.db" "$SERVER_ID" "$PW" <<'PYEOF'
@@ -112,6 +112,10 @@ u = d['users'][0] if d['users'] else {}
 assert set(u.keys()) == {'id','username','image','firstname'}, f"simplified keys wrong: {u.keys()}"
 print("PASS: users anon simplified keys")
 PYEOF
+
+# 14. /auth/user body byte-parity vs live CT101 shape (alphabetical keys)
+R=$(curl -s -o /tmp/b14 -w "%{http_code}" "$B/auth/user" -H "Authorization: Bearer $TOKEN")
+check "user body byte-parity" '{"extra":null,"id":1,"image":null,"roles":["admin"],"username":"admin"}' "$(cat /tmp/b14)"
 
 kill $SRV 2>/dev/null
 echo "=== RESULT: pass=$pass fail=$fail ==="
