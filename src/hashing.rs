@@ -20,7 +20,10 @@ fn rna(token: &str) -> String {
 pub fn create_hash(args: &[&str], decode: bool) -> String {
     let mut s: String = args.iter().map(|a| rna(a)).collect();
     if decode {
-        s = unidecode::unidecode(&s);
+        // Python unidecode maps U+30FC (katakana-hiragana prolonged sound
+        // mark) to '-'; the Rust crate drops it. Pre-substitute to keep
+        // byte parity (gold vector: Southern All Stars → 0514151603b25392).
+        s = unidecode::unidecode(&s.replace('\u{30FC}', "-"));
     }
     format!("{:016x}", xxh3_64(s.as_bytes()))
 }
@@ -54,6 +57,12 @@ mod tests {
         assert_eq!(create_hash(&["Beyoncé"], false), "3191c36a29b65358");
         assert_eq!(create_hash(&["...And Justice"], false), "3eec0d191087a07e");
         assert_eq!(create_hash(&["X JAPAN"], true), "b6c3ba2e2e113d2d");
+        // U+30FC katakana dash: Python unidecode → '-', Rust crate drops it;
+        // pre-substitution keeps this byte-identical to live CT101 gold.
+        assert_eq!(
+            create_hash(&["Southern All Stars - サザンオールスターズ"], true),
+            "0514151603b25392"
+        );
         // NOTE: golden albumhash 422dd2d6ff4397c5 comes from the scan-time call
         // site (lib/taglib.py) — needs its own vector once args are pinned.
     }
