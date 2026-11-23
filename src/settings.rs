@@ -1,5 +1,7 @@
 //! Paths + settings.json (UserConfig subset) — parity with swingmusic settings.py / config.py.
 use serde_json::{json, Value};
+use crate::models::UserConfig;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -104,5 +106,34 @@ impl Settings {
     #[allow(dead_code)]
     pub fn save(&self) -> std::io::Result<()> {
         std::fs::write(&self.path, serde_json::to_string_pretty(&self.data)?)
+    }
+
+    /// Effective user config — gold config.py union semantics: defaults
+    /// overridden by present settings.json keys (unknown keys ignored).
+    pub fn from_settings(&self) -> UserConfig {
+        let mut cfg = UserConfig::default();
+        if !self.data.is_object() {
+            return cfg;
+        }
+        macro_rules! ov {
+            ($f:ident, $k:literal, $t:ty) => {
+                if let Some(v) = self.data.get($k) {
+                    if let Ok(p) = serde_json::from_value::<$t>(v.clone()) {
+                        cfg.$f = p;
+                    }
+                }
+            };
+        }
+        ov!(extract_featured_artists, "extractFeaturedArtists", bool);
+        ov!(remove_prod_by, "removeProdBy", bool);
+        ov!(remove_remaster_info, "removeRemasterInfo", bool);
+        ov!(merge_albums, "mergeAlbums", bool);
+        ov!(clean_album_title, "cleanAlbumTitle", bool);
+        ov!(show_albums_as_singles, "showAlbumsAsSingles", bool);
+        ov!(artist_article_aware_sorting, "artistArticleAwareSorting", bool);
+        ov!(artist_separators, "artistSeparators", HashSet<String>);
+        ov!(genre_separators, "genreSeparators", HashSet<String>);
+        ov!(artist_split_ignore_list, "artistSplitIgnoreList", Vec<String>);
+        cfg
     }
 }

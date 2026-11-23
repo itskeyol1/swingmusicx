@@ -1,9 +1,19 @@
 //! SwingMusix — Rust rewrite of Swing Music v2.1.14 (AGPL-3.0-or-later).
 //! F1: skeleton + global auth middleware + auth routes + docs/openapi + static client.
+mod album;
 mod auth;
 mod crypto;
+mod dates;
+mod getall;
+mod hashing;
 mod jwt;
+mod library;
+mod models;
+mod natsort;
+mod cset;
+mod parsers;
 mod settings;
+mod store;
 mod user;
 
 use axum::{
@@ -16,6 +26,8 @@ use axum::{
     Json, Router,
 };
 use serde_json::{json, Value};
+use library::Library;
+use models::UserConfig;
 use settings::{Paths, Settings};
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +39,7 @@ pub struct AppState {
     /// Global one-shot pair code — parity with api/auth.py `pair_token` dict.
     /// ponytail: process-local Mutex matches upstream single-process global.
     pub pair: Arc<Mutex<Option<(String, Value)>>>,
+    pub library: Arc<Library>,
 }
 
 #[derive(Clone)]
@@ -216,6 +229,7 @@ async fn serve_static(st: &AppState, rel: &str) -> Response {
 async fn main() {
     let paths = Paths::new();
     let settings = Settings::load(paths.settings_file());
+    let user_cfg = settings.from_settings();
 
     let jwt_secret = match crypto::load_jwt_secret(&paths.jwt_key_path()) {
         Ok(s) => s,
@@ -225,22 +239,34 @@ async fn main() {
         }
     };
 
+    // fresh-install parity: upstream creates tables on first run; then load
+    // the in-memory library (setup/__init__.py startup order).
+    let library = match rusqlite::Connection::open(&paths.app_db_path) {
+        Ok(conn) => {
+            if let Err(e) = user::create_tables(&conn) {
+                eprintln!("warning: cannot create tables: {e}");
+            }
+            match Library::load(&conn, &user_cfg) {
+                Ok(lib) => lib,
+                Err(e) => {
+                    eprintln!("warning: cannot load library: {e}");
+                    Library::default()
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("warning: cannot open db: {e}");
+            Library::default()
+        }
+    };
+
     let state = AppState {
         paths,
         settings,
         jwt_secret,
         pair: Arc::new(Mutex::new(None)),
+        library: Arc::new(library),
     };
-
-    // fresh-install parity: upstream creates tables on first run.
-    match rusqlite::Connection::open(&state.paths.app_db_path) {
-        Ok(conn) => {
-            if let Err(e) = user::create_tables(&conn) {
-                eprintln!("warning: cannot create tables: {e}");
-            }
-        }
-        Err(e) => eprintln!("warning: cannot open db: {e}"),
-    }
 
     let port: u16 = std::env::var("SWINGMUSIC_PORT")
         .ok()
@@ -264,6 +290,13 @@ async fn main() {
         .route("/docs", get(docs_ui))
         .route("/openapi.json", get(docs_openapi))
         .route("/onboarding-data", get(auth::onboarding_data))
+        .route("/getall/songs", get(getall::get_all_songs))
+        .route("/getall/{itemtype}", get(getall::get_all_items))
+        .route("/album", post(album::post_album))
+        .route("/album/{albumhash}/tracks", get(album::get_album_tracks))
+        .route("/album/from-artist", post(album::post_from_artist))
+        .route("/album/other-versions", post(album::post_other_versions))
+        .route("/album/similar", get(album::get_similar))
         .route("/", get(root))
         .route("/{*path}", get(fallback_static))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
