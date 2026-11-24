@@ -15,6 +15,13 @@ mod parsers;
 mod settings;
 mod store;
 mod user;
+mod fuzz;
+mod fuzz_tables;
+mod unidecode;
+mod unidecode_tables;
+
+#[cfg(test)]
+mod fuzz_validate;
 
 use axum::{
     body::{to_bytes, Body},
