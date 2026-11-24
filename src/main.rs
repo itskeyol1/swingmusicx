@@ -19,6 +19,7 @@ mod fuzz;
 mod fuzz_tables;
 mod unidecode;
 mod unidecode_tables;
+mod process;
 
 #[cfg(test)]
 mod fuzz_validate;

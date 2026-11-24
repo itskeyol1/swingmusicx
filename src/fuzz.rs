@@ -504,3 +504,357 @@ fn partial_ratio_impl(s1: &[u32], s2: &[u32], score_cutoff_in: f64) -> RawAlignm
 }
 
 // ======== B5 token scorers (next block) ========
+// ======== B5 token scorers ========
+
+/// fuzz_impl.hpp L55-61 (fuzz_detail::norm_distance):
+/// score = lensum>0 ? 100.0 - 100.0*dist/lensum : 100.0; return score >= cutoff ? score : 0.
+fn norm_distance(dist: usize, lensum: usize, score_cutoff: f64) -> f64 {
+    let score = if lensum > 0 {
+        100.0 - 100.0 * dist as f64 / lensum as f64
+    } else {
+        100.0
+    };
+    if score >= score_cutoff {
+        score
+    } else {
+        0.0
+    }
+}
+
+/// fuzz_impl.hpp L63-66 (fuzz_detail::score_cutoff_to_distance):
+/// (size_t)ceil((double)lensum * (1.0 - score_cutoff / 100)).
+fn score_cutoff_to_distance(score_cutoff: f64, lensum: usize) -> usize {
+    (lensum as f64 * (1.0 - score_cutoff / 100.0)).ceil() as usize
+}
+
+/// ratio (fuzz_impl.hpp L29-31) atas vektor code point:
+/// indel_normalized_similarity(s1, s2, score_cutoff/100) * 100.
+fn ratio_cp(a: &[u32], b: &[u32], score_cutoff: f64) -> f64 {
+    indel_normalized_similarity_cp(a, b, score_cutoff / 100.0) * 100.0
+}
+
+/// sorted_split (common_impl.hpp L161-181): pecah ikut is_space (32-bit), susun
+/// menaik (lexicographic code point == byte order untuk UTF-8), TIDAK dedupe.
+fn sorted_split(s: &str) -> Vec<&str> {
+    let mut splitted = split_by_space(s);
+    splitted.sort();
+    splitted
+}
+
+/// SplittedSentenceView::join (SplittedSentenceView.hpp L70-85): cantum perkataan
+/// asal dengan satu 0x20 antara setiap pasangan; senarai kosong -> kosong.
+fn join_words(words: &[&str]) -> Vec<u32> {
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<u32> = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        if i > 0 {
+            out.push(0x20);
+        }
+        out.extend(w.chars().map(|c| c as u32));
+    }
+    out
+}
+
+/// SplittedSentenceView::size/length (L57-68): 0 jika kosong; (n-1) + jumlah
+/// panjang perkataan (dalam code point).
+fn words_length(words: &[&str]) -> usize {
+    if words.is_empty() {
+        return 0;
+    }
+    let mut result = words.len() - 1;
+    for w in words {
+        result += w.chars().count();
+    }
+    result
+}
+
+/// set_decomposition (common_impl.hpp L12-35) — diambil mengikut nilai, jadi
+/// dedupe tempatan sahaja; intersection mengikut susunan a; padanan pertama
+/// dalam b dikeluarkan daripada difference_ba.
+struct Decomposition<'a> {
+    difference_ab: Vec<&'a str>,
+    difference_ba: Vec<&'a str>,
+    intersection: Vec<&'a str>,
+}
+
+fn set_decomposition<'a>(a: &[&'a str], b: &[&'a str]) -> Decomposition<'a> {
+    let mut a_words: Vec<&'a str> = a.to_vec();
+    a_words.dedup();
+    let mut difference_ba: Vec<&'a str> = b.to_vec();
+    difference_ba.dedup();
+
+    let mut intersection: Vec<&'a str> = Vec::new();
+    let mut difference_ab: Vec<&'a str> = Vec::new();
+
+    for &current_a in &a_words {
+        if let Some(pos) = difference_ba.iter().position(|&x| x == current_a) {
+            difference_ba.remove(pos);
+            intersection.push(current_a);
+        } else {
+            difference_ab.push(current_a);
+        }
+    }
+
+    Decomposition {
+        difference_ab,
+        difference_ba,
+        intersection,
+    }
+}
+
+/// fuzz_impl.hpp L294-311: token_sort_ratio = ratio(sorted_split(s1).join(),
+/// sorted_split(s2).join(), score_cutoff); cutoff > 100 -> 0.
+pub fn token_sort_ratio(s1: &str, s2: &str, score_cutoff: f64) -> f64 {
+    if score_cutoff > 100.0 {
+        return 0.0;
+    }
+    let j1 = join_words(&sorted_split(s1));
+    let j2 = join_words(&sorted_split(s2));
+    ratio_cp(&j1, &j2, score_cutoff)
+}
+
+/// fuzz_impl.hpp L330-349: partial_token_sort_ratio (varian partial_ratio).
+pub fn partial_token_sort_ratio(s1: &str, s2: &str, score_cutoff: f64) -> f64 {
+    if score_cutoff > 100.0 {
+        return 0.0;
+    }
+    let j1 = join_words(&sorted_split(s1));
+    let j2 = join_words(&sorted_split(s2));
+    partial_ratio_score_cp(&j1, &j2, score_cutoff)
+}
+
+/// fuzz_impl.hpp L368-420 (fuzz_detail + wrapper L423-437): token_set_ratio.
+pub fn token_set_ratio(s1: &str, s2: &str, score_cutoff: f64) -> f64 {
+    if score_cutoff > 100.0 {
+        return 0.0;
+    }
+    let ta = sorted_split(s1);
+    let tb = sorted_split(s2);
+    token_set_ratio_tokens(&ta, &tb, score_cutoff)
+}
+
+/// Inti token_set_ratio (L372-420) atas token yang telah disusun.
+fn token_set_ratio_tokens(tokens_a: &[&str], tokens_b: &[&str], score_cutoff: f64) -> f64 {
+    // FuzzyWuzzy mengembalikan 0 bagi input kosong.
+    if tokens_a.is_empty() || tokens_b.is_empty() {
+        return 0.0;
+    }
+
+    let decomposition = set_decomposition(tokens_a, tokens_b);
+    let intersect = &decomposition.intersection;
+    let diff_ab = &decomposition.difference_ab;
+    let diff_ba = &decomposition.difference_ba;
+
+    // satu ayat terkandung dalam yang lain
+    if !intersect.is_empty() && (diff_ab.is_empty() || diff_ba.is_empty()) {
+        return 100.0;
+    }
+
+    let diff_ab_joined = join_words(diff_ab);
+    let diff_ba_joined = join_words(diff_ba);
+
+    let ab_len = diff_ab_joined.len();
+    let ba_len = diff_ba_joined.len();
+    let sect_len = words_length(intersect);
+
+    // panjang rentetan sect+ab <-> sect dan sect+ba <-> sect
+    let sect_ab_len = sect_len + (sect_len > 0) as usize + ab_len;
+    let sect_ba_len = sect_len + (sect_len > 0) as usize + ba_len;
+
+    let mut result = 0.0;
+    let cutoff_distance = score_cutoff_to_distance(score_cutoff, sect_ab_len + sect_ba_len);
+    let dist = indel_distance_cp(&diff_ab_joined, &diff_ba_joined, cutoff_distance);
+    if dist <= cutoff_distance {
+        result = norm_distance(dist, sect_ab_len + sect_ba_len, score_cutoff);
+    }
+
+    // keluar awal kerana nisbah lain adalah 0
+    if sect_len == 0 {
+        return result;
+    }
+
+    // jarak levenshtein sect+ab <-> sect dan sect+ba <-> sect; hanya sect serupa,
+    // jadi jarak boleh dikira daripada beza panjang
+    let sect_ab_dist = (sect_len > 0) as usize + ab_len;
+    let sect_ab_ratio = norm_distance(sect_ab_dist, sect_len + sect_ab_len, score_cutoff);
+
+    let sect_ba_dist = (sect_len > 0) as usize + ba_len;
+    let sect_ba_ratio = norm_distance(sect_ba_dist, sect_len + sect_ba_len, score_cutoff);
+
+    result.max(sect_ab_ratio).max(sect_ba_ratio)
+}
+
+/// fuzz_impl.hpp L456-495: partial_token_set_ratio.
+pub fn partial_token_set_ratio(s1: &str, s2: &str, score_cutoff: f64) -> f64 {
+    if score_cutoff > 100.0 {
+        return 0.0;
+    }
+    let ta = sorted_split(s1);
+    let tb = sorted_split(s2);
+    partial_token_set_ratio_tokens(&ta, &tb, score_cutoff)
+}
+
+/// Inti partial_token_set_ratio (L460-478).
+fn partial_token_set_ratio_tokens(tokens_a: &[&str], tokens_b: &[&str], score_cutoff: f64) -> f64 {
+    if tokens_a.is_empty() || tokens_b.is_empty() {
+        return 0.0;
+    }
+
+    let decomposition = set_decomposition(tokens_a, tokens_b);
+
+    // keluar awal apabila ada perkataan sama dalam kedua-dua jujukan
+    if !decomposition.intersection.is_empty() {
+        return 100.0;
+    }
+
+    let jab = join_words(&decomposition.difference_ab);
+    let jba = join_words(&decomposition.difference_ba);
+    partial_ratio_score_cp(&jab, &jba, score_cutoff)
+}
+
+/// fuzz_impl.hpp L514-564: token_ratio (versi tidak cache).
+pub fn token_ratio(s1: &str, s2: &str, score_cutoff: f64) -> f64 {
+    if score_cutoff > 100.0 {
+        return 0.0;
+    }
+
+    let tokens_a = sorted_split(s1);
+    let tokens_b = sorted_split(s2);
+
+    let decomposition = set_decomposition(&tokens_a, &tokens_b);
+    let intersect = &decomposition.intersection;
+    let diff_ab = &decomposition.difference_ab;
+    let diff_ba = &decomposition.difference_ba;
+
+    if !intersect.is_empty() && (diff_ab.is_empty() || diff_ba.is_empty()) {
+        return 100.0;
+    }
+
+    let diff_ab_joined = join_words(diff_ab);
+    let diff_ba_joined = join_words(diff_ba);
+
+    let ab_len = diff_ab_joined.len();
+    let ba_len = diff_ba_joined.len();
+    let sect_len = words_length(intersect);
+
+    // NOTA: dalam C++, tokens_a/tokens_b ASAL (tanpa dedupe) digunakan di sini —
+    // set_decomposition menerima salinan mengikut nilai.
+    let mut result = ratio_cp(&join_words(&tokens_a), &join_words(&tokens_b), score_cutoff);
+
+    // panjang rentetan sect+ab <-> sect dan sect+ba <-> sect
+    let sect_ab_len = sect_len + (sect_len > 0) as usize + ab_len;
+    let sect_ba_len = sect_len + (sect_len > 0) as usize + ba_len;
+
+    let cutoff_distance = score_cutoff_to_distance(score_cutoff, sect_ab_len + sect_ba_len);
+    let dist = indel_distance_cp(&diff_ab_joined, &diff_ba_joined, cutoff_distance);
+    if dist <= cutoff_distance {
+        let nd = norm_distance(dist, sect_ab_len + sect_ba_len, score_cutoff);
+        if nd > result {
+            result = nd;
+        }
+    }
+
+    // keluar awal kerana nisbah lain adalah 0
+    if sect_len == 0 {
+        return result;
+    }
+
+    // jarak levenshtein sect+ab <-> sect dan sect+ba <-> sect
+    let sect_ab_dist = (sect_len > 0) as usize + ab_len;
+    let sect_ab_ratio = norm_distance(sect_ab_dist, sect_len + sect_ab_len, score_cutoff);
+
+    let sect_ba_dist = (sect_len > 0) as usize + ba_len;
+    let sect_ba_ratio = norm_distance(sect_ba_dist, sect_len + sect_ba_len, score_cutoff);
+
+    result.max(sect_ab_ratio).max(sect_ba_ratio)
+}
+
+/// fuzz_impl.hpp L700-737: partial_token_ratio (versi tidak cache).
+pub fn partial_token_ratio(s1: &str, s2: &str, score_cutoff: f64) -> f64 {
+    if score_cutoff > 100.0 {
+        return 0.0;
+    }
+
+    let tokens_a = sorted_split(s1);
+    let tokens_b = sorted_split(s2);
+
+    let decomposition = set_decomposition(&tokens_a, &tokens_b);
+
+    // keluar awal apabila ada perkataan sama dalam kedua-dua jujukan
+    if !decomposition.intersection.is_empty() {
+        return 100.0;
+    }
+
+    let diff_ab = &decomposition.difference_ab;
+    let diff_ba = &decomposition.difference_ba;
+
+    // word_count ASAL berbanding word_count dedupe (diff_*) — penting.
+    let result = partial_ratio_score_cp(
+        &join_words(&tokens_a),
+        &join_words(&tokens_b),
+        score_cutoff,
+    );
+
+    // jangan kira partial_ratio yang sama dua kali
+    if tokens_a.len() == diff_ab.len() && tokens_b.len() == diff_ba.len() {
+        return result;
+    }
+
+    let score_cutoff = if score_cutoff > result { score_cutoff } else { result };
+    let second = partial_ratio_score_cp(&join_words(diff_ab), &join_words(diff_ba), score_cutoff);
+    result.max(second)
+}
+
+/// fuzz_impl.hpp L785-829: WRatio (tanpa cache).
+pub fn w_ratio(s1: &str, s2: &str, score_cutoff: f64) -> f64 {
+    if score_cutoff > 100.0 {
+        return 0.0;
+    }
+
+    const UNBASE_SCALE: f64 = 0.95;
+
+    let len1 = cps(s1).len();
+    let len2 = cps(s2).len();
+
+    // FuzzyWuzzy mengembalikan 0 bagi input kosong.
+    if len1 == 0 || len2 == 0 {
+        return 0.0;
+    }
+
+    let len_ratio = if len1 > len2 {
+        len1 as f64 / len2 as f64
+    } else {
+        len2 as f64 / len1 as f64
+    };
+
+    let mut end_ratio = ratio(s1, s2, score_cutoff);
+
+    if len_ratio < 1.5 {
+        let score_cutoff = score_cutoff.max(end_ratio) / UNBASE_SCALE;
+        return end_ratio.max(token_ratio(s1, s2, score_cutoff) * UNBASE_SCALE);
+    }
+
+    let partial_scale = if len_ratio <= 8.0 { 0.9 } else { 0.6 };
+
+    let score_cutoff = score_cutoff.max(end_ratio) / partial_scale;
+    end_ratio = end_ratio.max(partial_ratio(s1, s2, score_cutoff) * partial_scale);
+
+    let score_cutoff = score_cutoff.max(end_ratio) / UNBASE_SCALE;
+    end_ratio.max(partial_token_ratio(s1, s2, score_cutoff) * UNBASE_SCALE * partial_scale)
+}
+
+/// fuzz_impl.hpp L887-909: QRatio — tiada early-out cutoff>100 (berbeza daripada
+/// yang lain); hanya semakan panjang kosong, kemudian ratio.
+pub fn q_ratio(s1: &str, s2: &str, score_cutoff: f64) -> f64 {
+    let len1 = cps(s1).len();
+    let len2 = cps(s2).len();
+
+    // FuzzyWuzzy mengembalikan 0 bagi input kosong.
+    if len1 == 0 || len2 == 0 {
+        return 0.0;
+    }
+
+    ratio(s1, s2, score_cutoff)
+}
