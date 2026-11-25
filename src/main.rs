@@ -23,6 +23,7 @@ mod process;
 mod search;
 mod artist;
 mod folder;
+mod home;
 
 #[cfg(test)]
 mod fuzz_validate;
@@ -320,6 +321,9 @@ async fn main() {
         .route("/folder/dir-browser", post(folder::list_folders))
         .route("/folder/show-in-files", get(folder::open_in_file_manager))
         .route("/folder/tracks/all", get(folder::get_tracks_in_path))
+        .route("/nothome/", get(home::homepage_items))
+        .route("/nothome/recents/added", get(home::get_recently_added))
+        .route("/nothome/recents/played", get(home::get_recently_played))
         .route("/", get(root))
         .route("/{*path}", get(fallback_static))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
