@@ -95,7 +95,7 @@ fn posix_trim(p: &Path) -> String {
 
 /// `pathlib.Path(x).resolve()` — non-strict: canonicalize when the path exists,
 /// otherwise lexically normalise to an absolute path.
-fn py_resolve(p: &str) -> PathBuf {
+pub(crate) fn py_resolve(p: &str) -> PathBuf {
     let path = PathBuf::from(p);
     if let Ok(c) = path.canonicalize() {
         return c;
@@ -222,7 +222,7 @@ fn all_filepaths(tracks: &[Track]) -> Vec<String> {
 }
 
 /// FolderStore.get_tracks_by_filepaths()
-fn tracks_by_filepaths(tracks: &[Track], files: &[String]) -> Vec<Track> {
+pub(crate) fn tracks_by_filepaths(tracks: &[Track], files: &[String]) -> Vec<Track> {
     let mut out: Vec<Track> = Vec::new();
     for f in files {
         for t in tracks.iter().filter(|t| &t.filepath == f) {

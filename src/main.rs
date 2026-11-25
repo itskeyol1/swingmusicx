@@ -25,6 +25,7 @@ mod artist;
 mod folder;
 mod home;
 mod notsettings;
+mod stream;
 
 #[cfg(test)]
 mod fuzz_validate;
@@ -329,6 +330,10 @@ async fn main() {
         .route("/notsettings/get-root-dirs", get(notsettings::get_root_dirs))
         .route("/notsettings/add-root-dirs", post(notsettings::add_root_dirs))
         .route("/notsettings/trigger-scan", get(notsettings::trigger_scan))
+        .route("/file/silence", post(stream::get_audio_silence))
+        .route("/file/waveform/{trackhash}", get(stream::get_track_waveform))
+        .route("/file/{trackhash}/legacy", get(stream::send_track_file_legacy))
+        .route("/file/{trackhash}", get(stream::send_track_file))
         .route("/", get(root))
         .route("/{*path}", get(fallback_static))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
