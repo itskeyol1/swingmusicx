@@ -22,8 +22,12 @@ fn bad(msg: &str, code: StatusCode) -> Response {
 }
 
 fn cookie_val(name: &str, value: &str, max_age: i64) -> HeaderValue {
+    // CT101 sets a host-only cookie with NO SameSite attribute. `SameSite=None`
+    // without `Secure` is rejected by browsers on http:// (incl. Tailscale
+    // plain HTTP), so /auth/user returns 401 and the UI bounces back to
+    // "Welcome back". Do not re-add it.
     HeaderValue::from_str(&format!(
-        "{name}={value}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=None"
+        "{name}={value}; Max-Age={max_age}; Path=/; HttpOnly"
     ))
     .unwrap()
 }
