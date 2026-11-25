@@ -20,6 +20,9 @@ mod fuzz_tables;
 mod unidecode;
 mod unidecode_tables;
 mod process;
+mod search;
+mod artist;
+mod folder;
 
 #[cfg(test)]
 mod fuzz_validate;
@@ -305,6 +308,18 @@ async fn main() {
         .route("/album/from-artist", post(album::post_from_artist))
         .route("/album/other-versions", post(album::post_other_versions))
         .route("/album/similar", get(album::get_similar))
+        .route("/artist/{artisthash}", get(artist::get_artist))
+        .route("/artist/{artisthash}/albums", get(artist::get_artist_albums))
+        .route("/artist/{artisthash}/tracks", get(artist::get_all_artist_tracks))
+        .route("/artist/{artisthash}/similar", get(artist::get_similar_artists))
+        .route("/search/top", get(search::get_top_results))
+        .route("/search", get(search::search_items))
+        .route("/search/", get(search::search_items))
+        .route("/folder", post(folder::get_folder_tree))
+        .route("/folder/", post(folder::get_folder_tree))
+        .route("/folder/dir-browser", post(folder::list_folders))
+        .route("/folder/show-in-files", get(folder::open_in_file_manager))
+        .route("/folder/tracks/all", get(folder::get_tracks_in_path))
         .route("/", get(root))
         .route("/{*path}", get(fallback_static))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))

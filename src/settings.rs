@@ -92,6 +92,12 @@ impl Settings {
         self.data["usersOnLogin"].as_bool().unwrap_or(true)
     }
 
+    pub fn show_playlists_in_folder_view(&self) -> bool {
+        self.data["showPlaylistsInFolderView"]
+            .as_bool()
+            .unwrap_or(false)
+    }
+
     pub fn root_dirs(&self) -> Vec<String> {
         self.data["rootDirs"]
             .as_array()

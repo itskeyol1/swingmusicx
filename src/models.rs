@@ -162,11 +162,25 @@ pub fn default_artist_ignore_list() -> Vec<String> {
 pub struct ArtistRef {
     pub name: String,
     pub artisthash: String,
+    /// Live marker: `create_artists()` (lib/tagger.py L237-241) mutates the
+    /// shared track dicts — albumartists entries that are NOT present in the
+    /// same track's `artists` list (exact dict equality) get `in_track=false`.
+    /// The marker persists on the store objects, so every response that
+    /// serializes the store track/album afterwards carries it. Fresh
+    /// TrackTable reads (db path) never carry it. `None` = key absent.
+    pub in_track: Option<bool>,
 }
 
 impl ArtistRef {
     pub fn to_value(&self) -> Value {
-        json!({ "name": self.name, "artisthash": self.artisthash })
+        match self.in_track {
+            Some(v) => json!({
+                "name": self.name,
+                "artisthash": self.artisthash,
+                "in_track": v,
+            }),
+            None => json!({ "name": self.name, "artisthash": self.artisthash }),
+        }
     }
 }
 
@@ -253,6 +267,57 @@ fn as_json(row: &Row, idx: usize) -> Value {
     match row.get_ref(idx) {
         Ok(ValueRef::Text(t)) => serde_json::from_slice::<Value>(t).unwrap_or_else(|_| json!({})),
         _ => json!({}),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// album _score registry — live shared-store semantics
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap as StdHashMap;
+use std::sync::{Mutex as StdMutex, OnceLock};
+
+/// Process-global albumhash → `_score` map.
+///
+/// Live Python mutates the SHARED Album store objects in
+/// SearchAlbums.__call__ (`album._score = item[1]`), and the album serializer
+/// keeps `_score`. The mutation therefore persists: any later response that
+/// re-serializes the same album (artist pages, /search/top fill, getall)
+/// sees the retained score — verified against the wave-2b gold (search_albums_tl
+/// writes 100.0, the later artist_albums/info pages read it back; the other
+/// single on the same page keeps 0). Track/artist serializers strip `_score`,
+/// so only album serializations consult this registry.
+static ALBUM_SCORES: OnceLock<StdMutex<StdHashMap<String, f64>>> = OnceLock::new();
+
+fn album_scores() -> &'static StdMutex<StdHashMap<String, f64>> {
+    ALBUM_SCORES.get_or_init(|| StdMutex::new(StdHashMap::new()))
+}
+
+/// Write-through for a search result set (live `album._score = item[1]`).
+pub fn record_album_scores(entries: &[(String, f64)]) {
+    if let Ok(mut m) = album_scores().lock() {
+        for (h, s) in entries {
+            m.insert(h.clone(), *s);
+        }
+    }
+}
+
+/// Read-side for serializers. `None` = never scored (live default
+/// `_score: float = 0` — serialized as int `0`).
+pub fn album_score_for(albumhash: &str) -> Option<f64> {
+    album_scores()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(albumhash).copied())
+}
+
+/// Serializer renderer for `_score` with float parity: absent → int `0`,
+/// scored → the float repr (`50.0`, `100.0`, `88.88888888888889`) — Python
+/// keeps the rapidfuzz float, never an int.
+fn score_value(v: Option<f64>) -> Value {
+    match v {
+        Some(x) => json!(x),
+        None => json!(0),
     }
 }
 
@@ -460,6 +525,7 @@ impl Track {
                 .map(|a| ArtistRef {
                     artisthash: create_hash(&[a.as_str()], true),
                     name: a,
+                    in_track: None,
                 })
                 .collect()
         }
@@ -487,6 +553,7 @@ impl Track {
                     self.artists.push(ArtistRef {
                         name: f,
                         artisthash: h.clone(),
+                        in_track: None,
                     });
                     new_hashes.push(h);
                 }
@@ -920,7 +987,7 @@ impl Album {
             "type": self.r#type,
             "versions": self.versions,
             "weakhash": self.weakhash,
-            "_score": num(self.score),
+            "_score": score_value(album_score_for(&self.albumhash)),
         })
     }
 }

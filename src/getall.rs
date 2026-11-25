@@ -58,9 +58,16 @@ pub fn now_ts() -> i64 {
         .unwrap_or(0)
 }
 
+/// Current user id from the identity payload.
+///
+/// The JWT `sub` (and therefore `CurrentUser.0`) is the *identity dict*
+/// (`user.todict()` — `{"id":1,...}`), NOT a bare int, so `as_i64()` always
+/// yields 0. Read the `id` field instead, mirroring Python's
+/// `get_current_userid()` (utils/auth.py).
 pub fn user_id(ext: &Option<Extension<CurrentUser>>) -> i64 {
     ext.as_ref()
-        .and_then(|Extension(cu)| cu.0.as_i64())
+        .and_then(|Extension(cu)| cu.0.get("id"))
+        .and_then(|v| v.as_i64())
         .unwrap_or(0)
 }
 
@@ -133,7 +140,7 @@ fn play_count_text(n: i64) -> String {
 }
 
 /// `datetime.fromtimestamp(ts).year` — UTC civil year (parity host TZ=UTC).
-fn year_of(ts: i64) -> i64 {
+pub fn year_of(ts: i64) -> i64 {
     let days = ts.div_euclid(86400);
     let z = days + 719468;
     let era = z.div_euclid(146097);

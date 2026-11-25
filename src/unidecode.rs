@@ -38,13 +38,21 @@ mod tests {
     #[test]
     fn parity_samples_python_140() {
         // Verified against Python unidecode 1.4.0 (rfvenv) 2026-11-23.
-        assert_eq!(unidecode("ｶﾀﾅ"), "katakana");
+        // Verified against Python unidecode 1.4.0 (rfvenv) 2026-11-24:
+        // 3 halfwidth kana ｶﾀﾅ -> "katana" (earlier expected value "katakana" was a vector typo).
+        assert_eq!(unidecode("ｶﾀﾅ"), "katana");
+        assert_eq!(unidecode("ｶﾀｶﾅ"), "katakana");
         assert_eq!(unidecode("ゾーン"), "zo-n");
         assert_eq!(unidecode("aーb"), "a-b"); // U+30FC -> '-'
         assert_eq!(unidecode("Æ"), "AE");
         assert_eq!(unidecode("ẞ"), "SS");
         assert_eq!(unidecode("ß"), "ss");
-        assert_eq!(unidecode("\u{EFFFD}"), "D");
+        // U+EFFFD (unassigned): Python unidecode 1.4.0 DROPS it -> "". An
+        // earlier "D" vector came from the probe literal "\uEFFFD", which
+        // Python parses as U+EFFF + 'D' (\u takes exactly 4 hex digits); the
+        // dropped U+EFFF plus the kept 'D' yields "D". Re-verified 2026-11-24.
+        assert_eq!(unidecode("\u{EFFFD}"), "");
+        assert_eq!(unidecode("\u{EFFF}D"), "D");
         assert_eq!(unidecode("\u{0301}"), ""); // combining mark dropped
         assert_eq!(unidecode("e\u{0301}"), "e");
         assert_eq!(unidecode("\u{1F97A}"), ""); // < 0xEFFFF but unmapped

@@ -36,7 +36,7 @@ impl Library {
                 return Ok(Library::default());
             }
         };
-        let mut albums = crate::store::create_albums(&tracks);
+        let mut albums = crate::store::create_albums(&mut tracks);
         let mut artists = crate::store::create_artists(&tracks);
 
         map_scrobble_data(conn, &mut tracks, &mut albums, &mut artists);
@@ -99,6 +99,45 @@ impl Library {
             .iter()
             .filter_map(|h| self.artists.iter().find(|a| &a.artisthash == h).cloned())
             .collect()
+    }
+
+    /// `AlbumStore.get_albums_by_hashes` — keep the given hash order, skip
+    /// hashes with no album (store/albums.py:80).
+    pub fn get_albums_by_hashes(&self, albumhashes: &[String]) -> Vec<Album> {
+        let mut out: Vec<Album> = Vec::new();
+        for h in albumhashes {
+            if let Some(a) = self.albums.iter().find(|a| &a.albumhash == h) {
+                out.push(a.clone());
+            }
+        }
+        out
+    }
+
+    /// `TrackStore.get_tracks_by_trackhashes` — iterate the gold set order of
+    /// the trackhash set (store/tracks.py:191; the inputs on these paths are
+    /// Python sets, so the list re-sort branch is unreachable), one track per
+    /// hash: `TrackGroup.get_best()` = first max-bitrate row (CPython `max`
+    /// keeps the first maximal element).
+    pub fn get_tracks_by_trackhashes(&self, trackhashes: &[String]) -> Vec<Track> {
+        let mut set = crate::cset::PySetStr::gold();
+        for h in trackhashes {
+            set.add(h);
+        }
+
+        let mut out: Vec<Track> = Vec::new();
+        for h in set.iter_order() {
+            let mut best: Option<&Track> = None;
+            for t in self.tracks.iter().filter(|t| t.trackhash == h) {
+                match best {
+                    Some(b) if t.bitrate <= b.bitrate => {}
+                    _ => best = Some(t),
+                }
+            }
+            if let Some(t) = best {
+                out.push(t.clone());
+            }
+        }
+        out
     }
 
     /// `SimilarArtistTable.get_by_hash(...).get_artist_hash_set()` — None means

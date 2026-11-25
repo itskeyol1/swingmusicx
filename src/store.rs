@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::models::{Album, Artist, Track, UserConfig};
+use crate::models::{Album, Artist, ArtistRef, Track, UserConfig};
 use crate::natsort::natsorted;
 
 /// Load every track from the live sqlite db using the positional column map.
@@ -29,11 +29,24 @@ pub fn load_tracks(conn: &rusqlite::Connection, cfg: &UserConfig) -> rusqlite::R
 }
 
 /// Port of lib/albumslib.py create_albums() — in-memory grouping by albumhash.
-pub fn create_albums(tracks: &[Track]) -> Vec<Album> {
+///
+/// `&mut` because the live startup order is create_albums() THEN
+/// create_artists(), and the latter mutates the shared track dicts in place
+/// (`albumartists[i]["in_track"] = False`). We mirror that exactly: after an
+/// album is built from a track, the same mutation is applied to the track.
+pub fn create_albums(tracks: &mut [Track]) -> Vec<Album> {
     let mut order: HashMap<String, usize> = HashMap::new();
     let mut albums: Vec<Album> = Vec::new();
 
-    for t in tracks {
+    for t in tracks.iter_mut() {
+        // Live order check: create_artists() runs after create_albums(), and
+        // the album dicts reference the SAME artist dicts as their tracks, so
+        // the aa∉ar markers applied by create_artists() are visible through
+        // the album too (aliasing). The Rust album clone snapshots its
+        // artist refs, so apply the markers BEFORE the album is built to
+        // keep the same serialized state on both sides.
+        apply_albumartists_in_track_flags(t);
+
         match order.get(&t.albumhash).copied() {
             Some(i) => {
                 let a = &mut albums[i];
@@ -72,6 +85,32 @@ pub fn create_albums(tracks: &[Track]) -> Vec<Album> {
     albums
 }
 
+/// Per-albumartist `in_track` flags for a track: true when the exact
+/// (name, artisthash) pair is present in the track's `artists` list — the live
+/// `a not in this_artists` dict-equality check (lib/tagger.py L237-241).
+fn albumartists_in_track_flags(artists: &[ArtistRef], albumartists: &[ArtistRef]) -> Vec<bool> {
+    albumartists
+        .iter()
+        .map(|a| {
+            artists
+                .iter()
+                .any(|x| x.name == a.name && x.artisthash == a.artisthash)
+        })
+        .collect()
+}
+
+/// Apply the live `create_artists()` mutation to a store track in place: every
+/// albumartist NOT present in `artists` is marked `in_track = false`. Entries
+/// present in both keep the absent key (live only sets it when appending).
+pub fn apply_albumartists_in_track_flags(t: &mut Track) {
+    let flags = albumartists_in_track_flags(&t.artists, &t.albumartists);
+    for (a, present) in t.albumartists.iter_mut().zip(flags.iter()) {
+        if !*present {
+            a.in_track = Some(false);
+        }
+    }
+}
+
 /// Port of lib/tagger.py create_artists() — group tracks per artisthash.
 /// Gold walks `[*track.artists]` plus every `track.albumartists` entry not
 /// already present (marked in_track=false: those get tracks empty, count 0).
@@ -100,12 +139,10 @@ pub fn create_artists(tracks: &[Track]) -> Vec<Artist> {
 
     for t in &deduped {
         // gold L235-240: this_artists = [*track.artists] + albumartists not in it
+        let aa_flags = albumartists_in_track_flags(&t.artists, &t.albumartists);
         let mut this: Vec<_> = t.artists.iter().map(|a| (a, true)).collect();
-        for a in &t.albumartists {
-            let present = this
-                .iter()
-                .any(|(x, _)| x.artisthash == a.artisthash && x.name == a.name);
-            if !present {
+        for (a, present) in t.albumartists.iter().zip(aa_flags.iter()) {
+            if !*present {
                 this.push((a, false));
             }
         }
@@ -185,11 +222,13 @@ mod tests {
             albumartists: vec![ArtistRef {
                 name: "Artist".to_string(),
                 artisthash: "ah1".to_string(),
+                in_track: None,
             }],
             albumhash: albumhash.to_string(),
             artists: vec![ArtistRef {
                 name: "Artist".to_string(),
                 artisthash: "ah1".to_string(),
+                in_track: None,
             }],
             bitrate: 0,
             copyright: String::new(),
@@ -229,12 +268,12 @@ mod tests {
 
     #[test]
     fn album_aggregation() {
-        let tracks = vec![
+        let mut tracks = vec![
             track("alb1", "t1", "One"),
             track("alb1", "t2", "Two"),
             track("alb2", "t3", "Three"),
         ];
-        let albums = create_albums(&tracks);
+        let albums = create_albums(&mut tracks);
         assert_eq!(albums.len(), 2);
         let a = albums.iter().find(|a| a.albumhash == "alb1").unwrap();
         assert_eq!(a.trackcount, 2);
@@ -252,5 +291,35 @@ mod tests {
         assert_eq!(a.trackcount, 2);
         assert_eq!(a.albumcount, 1);
         assert_eq!(a.duration, 200);
+    }
+
+    /// Wave-2b gold parity: only albumartists pairs absent from `artists`
+    /// (exact name+hash) get `in_track=false`; matching pairs keep the key
+    /// absent. Serializer emits the key only when set.
+    #[test]
+    fn albumartists_marker_matches_gold() {
+        let mut t = track("alb1", "t1", "One");
+        t.albumartists.push(ArtistRef {
+            name: "Guest".to_string(),
+            artisthash: "ah2".to_string(),
+            in_track: None,
+        });
+        let mut tracks = vec![t];
+        let albums = create_albums(&mut tracks);
+        // in-list entry untouched (no key), aa∉ar entry marked false
+        assert_eq!(tracks[0].albumartists[0].in_track, None);
+        assert_eq!(tracks[0].albumartists[1].in_track, Some(false));
+        // live aliasing: the album references the same artist dicts, so the
+        // markers are visible through the album clone too
+        assert_eq!(albums[0].albumartists[0].in_track, None);
+        assert_eq!(albums[0].albumartists[1].in_track, Some(false));
+        assert_eq!(
+            tracks[0].albumartists[1].to_value(),
+            json!({"name": "Guest", "artisthash": "ah2", "in_track": false})
+        );
+        assert_eq!(
+            tracks[0].albumartists[0].to_value(),
+            json!({"name": "Artist", "artisthash": "ah1"})
+        );
     }
 }
