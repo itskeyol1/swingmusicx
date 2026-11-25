@@ -24,6 +24,7 @@ mod search;
 mod artist;
 mod folder;
 mod home;
+mod notsettings;
 
 #[cfg(test)]
 mod fuzz_validate;
@@ -324,6 +325,9 @@ async fn main() {
         .route("/nothome/", get(home::homepage_items))
         .route("/nothome/recents/added", get(home::get_recently_added))
         .route("/nothome/recents/played", get(home::get_recently_played))
+        .route("/notsettings/get-root-dirs", get(notsettings::get_root_dirs))
+        .route("/notsettings/add-root-dirs", post(notsettings::add_root_dirs))
+        .route("/notsettings/trigger-scan", get(notsettings::trigger_scan))
         .route("/", get(root))
         .route("/{*path}", get(fallback_static))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))

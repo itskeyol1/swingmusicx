@@ -2,7 +2,8 @@
 use serde_json::{json, Value};
 use crate::models::UserConfig;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone)]
 pub struct Paths {
@@ -67,7 +68,9 @@ impl Paths {
 #[derive(Clone)]
 pub struct Settings {
     path: PathBuf,
-    pub data: Value,
+    /// Shared so /notsettings/add-root-dirs can update root dirs live without
+    /// a restart — CT101's `config.rootDirs` is a process-global mutated in place.
+    data: Arc<RwLock<Value>>,
 }
 
 impl Settings {
@@ -77,29 +80,36 @@ impl Settings {
             .and_then(|s| serde_json::from_str::<Value>(&s).ok())
             .filter(|v| v.is_object())
             .unwrap_or_else(|| json!({}));
-        Self { path, data }
+        Self {
+            path,
+            data: Arc::new(RwLock::new(data)),
+        }
+    }
+
+    fn snapshot(&self) -> Value {
+        self.data.read().map(|d| d.clone()).unwrap_or_else(|_| json!({}))
     }
 
     pub fn server_id(&self) -> String {
-        self.data["serverId"].as_str().unwrap_or("").to_string()
+        self.snapshot()["serverId"].as_str().unwrap_or("").to_string()
     }
 
     pub fn legacy_server_id(&self) -> String {
-        self.data["legacy_serverId"].as_str().unwrap_or("").to_string()
+        self.snapshot()["legacy_serverId"].as_str().unwrap_or("").to_string()
     }
 
     pub fn users_on_login(&self) -> bool {
-        self.data["usersOnLogin"].as_bool().unwrap_or(true)
+        self.snapshot()["usersOnLogin"].as_bool().unwrap_or(true)
     }
 
     pub fn show_playlists_in_folder_view(&self) -> bool {
-        self.data["showPlaylistsInFolderView"]
+        self.snapshot()["showPlaylistsInFolderView"]
             .as_bool()
             .unwrap_or(false)
     }
 
     pub fn root_dirs(&self) -> Vec<String> {
-        self.data["rootDirs"]
+        self.snapshot()["rootDirs"]
             .as_array()
             .map(|a| {
                 a.iter()
@@ -109,21 +119,39 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    /// Replace rootDirs with the normalized list and persist settings.json.
+    /// Mirrors `config.rootDirs = normalize_paths(...); config.save()`.
+    pub fn set_root_dirs(&self, dirs: Vec<String>) -> std::io::Result<Vec<String>> {
+        let normalized = normalize_paths(&dirs);
+        {
+            let mut guard = self.data.write().map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "settings lock poisoned")
+            })?;
+            guard["rootDirs"] = json!(normalized);
+            std::fs::write(&self.path, serde_json::to_string_pretty(&*guard)?)?;
+        }
+        Ok(normalized)
+    }
+
     #[allow(dead_code)]
     pub fn save(&self) -> std::io::Result<()> {
-        std::fs::write(&self.path, serde_json::to_string_pretty(&self.data)?)
+        let guard = self.data.read().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::Other, "settings lock poisoned")
+        })?;
+        std::fs::write(&self.path, serde_json::to_string_pretty(&*guard)?)
     }
 
     /// Effective user config — gold config.py union semantics: defaults
     /// overridden by present settings.json keys (unknown keys ignored).
     pub fn from_settings(&self) -> UserConfig {
+        let data = self.snapshot();
         let mut cfg = UserConfig::default();
-        if !self.data.is_object() {
+        if !data.is_object() {
             return cfg;
         }
         macro_rules! ov {
             ($f:ident, $k:literal, $t:ty) => {
-                if let Some(v) = self.data.get($k) {
+                if let Some(v) = data.get($k) {
                     if let Ok(p) = serde_json::from_value::<$t>(v.clone()) {
                         cfg.$f = p;
                     }
@@ -141,5 +169,66 @@ impl Settings {
         ov!(genre_separators, "genreSeparators", HashSet<String>);
         ov!(artist_split_ignore_list, "artistSplitIgnoreList", Vec<String>);
         cfg
+    }
+}
+
+/// Port of swingmusic.utils.paths.normalize_paths: resolve each path, drop any
+/// path that is a child of an already-kept parent, return posix strings.
+/// Kept parent-first (sorted by component count) so children get filtered.
+pub fn normalize_paths(paths: &[String]) -> Vec<String> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let mut resolved: Vec<PathBuf> = paths
+        .iter()
+        .map(|p| {
+            let pb = PathBuf::from(p);
+            pb.canonicalize().unwrap_or_else(|_| {
+                if pb.is_absolute() {
+                    pb
+                } else {
+                    std::env::current_dir()
+                        .map(|d| d.join(&pb))
+                        .unwrap_or(pb)
+                }
+            })
+        })
+        .collect();
+    resolved.sort_by_key(|p| p.components().count());
+    let mut normalized: Vec<String> = Vec::new();
+    for current in &resolved {
+        let is_child = normalized.iter().any(|existing| {
+            let e = Path::new(existing);
+            current.starts_with(e) && current != e
+        });
+        if !is_child {
+            normalized.push(current.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_paths;
+
+    #[test]
+    fn normalize_drops_child_of_parent() {
+        let out = normalize_paths(&[
+            "/music/music".into(),
+            "/music/music/extra".into(),
+        ]);
+        assert_eq!(out, vec!["/music/music".to_string()]);
+    }
+
+    #[test]
+    fn normalize_keeps_distinct_paths() {
+        let out = normalize_paths(&["/mnt/music".into(), "/home/user/music".into()]);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn normalize_empty_is_empty() {
+        assert!(normalize_paths(&[]).is_empty());
     }
 }
