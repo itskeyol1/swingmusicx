@@ -86,8 +86,80 @@ impl Settings {
         }
     }
 
-    fn snapshot(&self) -> Value {
+    pub fn snapshot(&self) -> Value {
         self.data.read().map(|d| d.clone()).unwrap_or_else(|_| json!({}))
+    }
+
+    /// Snapshot of every setting the Vue UI reads from `GET /notsettings`.
+    /// Mirrors settings.py `get_all_settings()`: asdict(UserConfig()) defaults
+    /// overridden by settings.json, plus the computed/derived keys.
+    pub fn all_settings_json(&self) -> Value {
+        let defaults: Value = json!({
+            "_finished": true,
+            "_last_updated": 0.0,
+            "artistArticleAwareSorting": false,
+            "artistSeparators": [";", "/"],
+            "artistSortingArticles": ["a","an","as","das","de","der","des","die","een","ein","eine","einem","einen","einer","el","gli","het","il","la","las","le","les","lo","los","o","os","the","um","uma","umas","un","una","unas","une","uno","unos","uns"],
+            "artistSplitIgnoreList": [],
+            "cleanAlbumTitle": true,
+            "deviceId": "",
+            "deviceName": "",
+            "enablePeriodicScans": false,
+            "enablePlugins": true,
+            "enableWatchdog": false,
+            "excludeDirs": [],
+            "extractFeaturedArtists": true,
+            "genreSeparators": ["/", ";", "&"],
+            "lastfmApiKey": "",
+            "lastfmApiSecret": "",
+            "lastfmSessionKey": "",
+            "legacy_serverId": "",
+            "licenseInfo": null,
+            "mergeAlbums": false,
+            "plugins": [],
+            "removeProdBy": true,
+            "removeRemasterInfo": true,
+            "rootDirs": [],
+            "scanInterval": 10,
+            "serverId": "",
+            "showAlbumsAsSingles": false,
+            "showPlaylistsInFolderView": false,
+            "trustCloudLyrics": false,
+            "usersOnLogin": true,
+            "version": "2.1.14"
+        });
+        let mut out = defaults;
+        if let (Some(obj), Some(over)) = (out.as_object_mut(), self.snapshot().as_object().cloned()) {
+            for (k, v) in over {
+                // licenseKey and lastfmSessionKeys are never exposed (gold deletes them)
+                if k == "licenseKey" || k == "lastfmSessionKeys" {
+                    continue;
+                }
+                obj.insert(k, v);
+            }
+        }
+        // Computed keys the UI needs. Keep the values the live env uses; these
+        // are not secrets (device fingerprint / display name / version string).
+        {
+            let o = out.as_object_mut().unwrap();
+            o.insert("version".into(), json!("3.0.0"));
+            o.insert("lastfmSessionKey".into(), json!(""));
+            o.insert("licenseInfo".into(), Value::Null);
+            let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "SwingMusix".into());
+            let device_id = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                host.hash(&mut h);
+                format!("{:016x}", h.finish())
+            };
+            o.insert("deviceId".into(), json!(device_id));
+            o.insert("deviceName".into(), json!(host));
+            // UI reads enableWatchDog (capital D) in one place; gold uses
+            // enableWatchdog. Provide both so either code path is happy.
+            let wd = o.get("enableWatchdog").cloned().unwrap_or(json!(false));
+            o.insert("enableWatchDog".into(), wd);
+        }
+        out
     }
 
     pub fn server_id(&self) -> String {

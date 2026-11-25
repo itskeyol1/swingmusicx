@@ -29,6 +29,13 @@ fn bad(msg: &str, code: StatusCode) -> Response {
     (code, Json(json!({ "msg": msg }))).into_response()
 }
 
+/// GET /notsettings — full config object consumed by the Vue Settings page.
+/// Without this route the folders/settings page renders EMPTY (the SPA builds
+/// its DbSettings from this object: version, serverId, rootDirs, plugins...).
+pub async fn get_all_settings(State(st): State<AppState>) -> Response {
+    Json(st.settings.all_settings_json()).into_response()
+}
+
 /// GET /notsettings/get-root-dirs — {"dirs":[...]}
 pub async fn get_root_dirs(State(st): State<AppState>) -> Response {
     Json(json!({ "dirs": st.settings.root_dirs() })).into_response()

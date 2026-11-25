@@ -325,6 +325,7 @@ async fn main() {
         .route("/nothome/", get(home::homepage_items))
         .route("/nothome/recents/added", get(home::get_recently_added))
         .route("/nothome/recents/played", get(home::get_recently_played))
+        .route("/notsettings", get(notsettings::get_all_settings))
         .route("/notsettings/get-root-dirs", get(notsettings::get_root_dirs))
         .route("/notsettings/add-root-dirs", post(notsettings::add_root_dirs))
         .route("/notsettings/trigger-scan", get(notsettings::trigger_scan))
